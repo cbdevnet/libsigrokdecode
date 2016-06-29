@@ -74,15 +74,18 @@ class Decoder(srd.Decoder):
         if self.samplerate is None:
             raise Exception("Cannot decode without samplerate.")
         for (self.samplenum, pins) in data:
-            # seek for an interval with no state change with a length between 88 and 180 us (BREAK)
+            # seek for an interval with no state change with a length between 88 and 1000000 us (BREAK)
             if self.state == 'FIND_BREAK':
                 if self.run_bit != pins[0]:
                     runlen = (self.samplenum - self.run_start) * self.sample_usec
-                    if runlen > 88 and runlen < 180:
+                    if runlen > 88 and runlen < 1000000:
                         self.put(self.run_start, self.samplenum, self.out_ann, [1, ['Break']])
                         self.bit_break = self.run_bit
                         self.state = 'MARK_MAB'
                         self.channel = 0
+                    elif runlen >= 1000000:
+                        # error condition
+                        self.put(self.run_start, self.samplenum, self.out_ann, [10, ['Invalid break length']])
                     self.run_bit = pins[0]
                     self.run_start = self.samplenum
             # directly following the BREAK is the MARK AFTER BREAK
@@ -101,22 +104,22 @@ class Decoder(srd.Decoder):
                 self.aggreg += pins[0]
                 if self.samplenum == self.next_sample:
                     bit_value = 0 if round(self.aggreg/self.skip_per_bit) == self.bit_break else 1
-                    self.aggreg = pins[0]
+
                     if self.bit == 0:
                         self.byte = 0
                         self.put(self.run_start, self.samplenum, self.out_ann, [3, ['Start bit']])
                         if bit_value != 0:
-                            # invalid start bit, seek new break
+                            # (possibly) invalid start bit, mark but don't fail
                             self.put(self.samplenum, self.samplenum, self.out_ann, [10, ['Invalid start bit']])
-                            self.run_bit = pins[0]
-                            self.state = 'FIND_BREAK'
                     elif self.bit >= 9:
                         self.put(self.samplenum - self.skip_per_bit, self.samplenum, self.out_ann, [4, ['Stop bit']])
                         if bit_value != 1:
-                            # invalid stop bit, seek new break
+                            # invalid stop bit, mark
                             self.put(self.samplenum, self.samplenum, self.out_ann, [10, ['Invalid stop bit']])
-                            self.run_bit = pins[0]
-                            self.state = 'FIND_BREAK'
+                            if self.bit == 10:
+                                # on invalid second stop bit, search for new break
+                                self.run_bit = pins[0]
+                                self.state = 'FIND_BREAK'
                     else:
                         # label and process one bit
                         self.put(self.samplenum - self.skip_per_bit, self.samplenum, self.out_ann, [0, [str(bit_value)]])
@@ -135,7 +138,7 @@ class Decoder(srd.Decoder):
                         self.run_bit = pins[0]
                         self.state = 'MARK_IFT'
 
-
+                    self.aggreg = pins[0]
                     self.bit += 1
             # mark the INTERFRAME-TIME between bytes / INTERPACKET-TIME between packets
             elif self.state == 'MARK_IFT':
