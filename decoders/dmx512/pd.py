@@ -92,37 +92,35 @@ class Decoder(srd.Decoder):
                         self.state = 'READ_BYTE'
                         self.channel = 0
                         self.bit = 0
+                        self.aggreg = pins[0]
                         self.run_start = self.samplenum
             # mark and read a single transmitted byte (start bit, 8 data bits, 2 stop bits)
             elif self.state == 'READ_BYTE':
                 # This is kinda ugly but hey
-                self.next_sample = self.run_start + self.bit * self.skip_per_bit
-                if self.samplenum == self.next_sample or self.bit == 0:
+                self.next_sample = self.run_start + (self.bit + 1) * self.skip_per_bit
+                self.aggreg += pins[0]
+                if self.samplenum == self.next_sample:
+                    bit_value = 0 if round(self.aggreg/self.skip_per_bit) == self.bit_break else 1
+                    self.aggreg = pins[0]
                     if self.bit == 0:
                         self.byte = 0
-                        self.put(self.samplenum - 1, self.samplenum + self.skip_per_bit - 1, self.out_ann, [3, ['Start bit']])
-                        if pins[0] != self.bit_break:
+                        self.put(self.run_start, self.samplenum, self.out_ann, [3, ['Start bit']])
+                        if bit_value != 0:
                             # invalid start bit, seek new break
                             self.put(self.samplenum, self.samplenum, self.out_ann, [10, ['Invalid start bit']])
                             self.run_bit = pins[0]
                             self.state = 'FIND_BREAK'
-                    elif self.bit == 11:
-                        # dummy bit, jump to marking IFT
-                        self.channel += 1
-                        self.run_start = self.samplenum
-                        self.run_bit = pins[0]
-                        self.state = 'MARK_IFT'
                     elif self.bit >= 9:
-                        self.put(self.samplenum, self.samplenum + self.skip_per_bit, self.out_ann, [4, ['Stop bit']])
-                        if pins[0] == self.bit_break and self.bit == 10: # FIXME this sometimes trips on the first stop bit when being sampled too early
+                        self.put(self.samplenum - self.skip_per_bit, self.samplenum, self.out_ann, [4, ['Stop bit']])
+                        if bit_value != 1:
                             # invalid stop bit, seek new break
                             self.put(self.samplenum, self.samplenum, self.out_ann, [10, ['Invalid stop bit']])
                             self.run_bit = pins[0]
                             self.state = 'FIND_BREAK'
                     else:
                         # label and process one bit
-                        self.put(self.samplenum, self.samplenum + self.skip_per_bit, self.out_ann, [0, [('0' if pins[0] == self.bit_break else '1')]])
-                        self.byte |= (0 if pins[0] == self.bit_break else 1) << (self.bit - 1)
+                        self.put(self.samplenum - self.skip_per_bit, self.samplenum, self.out_ann, [0, [str(bit_value)]])
+                        self.byte |= bit_value << (self.bit - 1)
 
                     # label a complete byte
                     if self.bit == 10:
@@ -130,7 +128,13 @@ class Decoder(srd.Decoder):
                             self.put(self.run_start, self.next_sample, self.out_ann, [5, ['Start code']])
                         else:
                             self.put(self.run_start, self.next_sample, self.out_ann, [6, ['Channel ' + str(self.channel)]])
-                        self.put(self.run_start + self.skip_per_bit, self.next_sample - self.skip_per_bit, self.out_ann, [9, [str(self.byte) + " / " + str(hex(self.byte))]])
+                        self.put(self.run_start + self.skip_per_bit, self.next_sample - 2 * self.skip_per_bit, self.out_ann, [9, [str(self.byte) + " / " + str(hex(self.byte))]])
+                        # continue by scanning the IFT
+                        self.channel += 1
+                        self.run_start = self.samplenum
+                        self.run_bit = pins[0]
+                        self.state = 'MARK_IFT'
+
 
                     self.bit += 1
             # mark the INTERFRAME-TIME between bytes / INTERPACKET-TIME between packets
